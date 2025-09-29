@@ -4,8 +4,16 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #pragma comment(lib, "ws2_32.lib")
+
+volatile int keep_running = 1;
+
+void int_handler(int dummy) {
+    keep_running = 0;
+    printf("\nInterrupt received. Exiting gracefully...\n");
+}
 
 void print_usage(const char* prog) {
     printf("Usage: %s <host> <port> [options]\n", prog);
@@ -34,6 +42,9 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
+
+    // Set up signal handler for clean exit
+    signal(SIGINT, int_handler);
 
     const char* host = argv[1];
     const char* port = argv[2];
@@ -321,17 +332,26 @@ int main(int argc, char* argv[]) {
         printf("send() failed: %d\n", WSAGetLastError());
     } else {
         printf("Sent %d bytes\n", result);
-        
-        // Try to receive response
-        char buffer[4096];
-        result = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (result > 0) {
-            buffer[result] = '\0';
-            printf("\nReceived %d bytes:\n%s\n", result, buffer);
-        } else if (result == 0) {
-            printf("Connection closed by peer\n");
+    }
+
+    char buffer[4096];
+    while (keep_running) {
+        int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
+        if (bytes > 0) {
+            buffer[bytes] = '\0';
+            printf("[recv] %d bytes: %s\n", bytes, buffer);
+        } else if (bytes == 0) {
+            printf("Connection closed by peer.\n");
+            break;
         } else {
-            printf("recv() failed: %d\n", WSAGetLastError());
+            int err = WSAGetLastError();
+            if (err == WSAEWOULDBLOCK || err == WSAEINTR) {
+                Sleep(100); // no data, wait a bit
+                continue;
+            } else {
+                printf("recv() failed: %d\n", err);
+                break;
+            }
         }
     }
 
