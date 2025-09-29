@@ -324,16 +324,6 @@ int main(int argc, char* argv[]) {
         printf("  TCP_MAXRT: %d seconds\n", maxrt);
     }
 
-    // Send a simple test message
-    const char* msg = "GET / HTTP/1.0\r\n\r\n";
-    printf("\nSending test HTTP request...\n");
-    result = send(sock, msg, (int)strlen(msg), 0);
-    if (result == SOCKET_ERROR) {
-        printf("send() failed: %d\n", WSAGetLastError());
-    } else {
-        printf("Sent %d bytes\n", result);
-    }
-
     char buffer[4096];
     while (keep_running) {
         int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
@@ -346,12 +336,20 @@ int main(int argc, char* argv[]) {
         } else {
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK || err == WSAEINTR) {
-                Sleep(100); // no data, wait a bit
-                continue;
+                Sleep(1000); // no data, wait a bit
             } else {
                 printf("recv() failed: %d\n", err);
                 break;
             }
+        }
+        // Send a simple test message
+        const char* msg = "GET / HTTP/1.0\r\n\r\n";
+        printf("\nSending test HTTP request...\n");
+        result = send(sock, msg, (int)strlen(msg), 0);
+        if (result == SOCKET_ERROR) {
+            printf("send() failed: %d\n", WSAGetLastError());
+        } else {
+            printf("Sent %d bytes\n", result);
         }
     }
 
