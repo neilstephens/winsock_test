@@ -10,9 +10,9 @@
 
 volatile int keep_running = 1;
 
-void int_handler(int dummy) {
+void signal_handler(int signum) {
     keep_running = 0;
-    printf("\nInterrupt received. Exiting gracefully...\n");
+    printf("\n\n[SIGNAL] Interrupt received (signal %d). Shutting down gracefully...\n", signum);
 }
 
 void print_usage(const char* prog) {
@@ -33,8 +33,12 @@ void print_usage(const char* prog) {
     printf("  --recvbuf <bytes>     Receive buffer size (SO_RCVBUF)\n");
     printf("  --linger <sec>        Linger time on close, -1 to disable (SO_LINGER)\n");
     printf("  --maxrt <sec>         Maximum retransmission timeout in seconds (TCP_MAXRT)\n");
+    printf("  --send-interval <ms>  Interval for periodic sends (default: 5000ms)\n");
+    printf("  --initial-message <msg> Initial message to send on connect\n");
     printf("\nNote: TCP_MAXRT sets max retransmission timeout (time-based), not retry count.\n");
     printf("      Windows does not expose per-socket retry count configuration.\n");
+    printf("\nThe connection will remain open, sending periodic keepalive messages.\n");
+    printf("Press Ctrl+C to exit.\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -43,8 +47,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Set up signal handler for clean exit
-    signal(SIGINT, int_handler);
+    // Set up signal handlers for graceful shutdown
+    signal(SIGINT, signal_handler);   // Ctrl+C
+    signal(SIGTERM, signal_handler);  // Termination request
+    signal(SIGBREAK, signal_handler); // Ctrl+Break on Windows
 
     const char* host = argv[1];
     const char* port = argv[2];
@@ -62,6 +68,8 @@ int main(int argc, char* argv[]) {
     int opt_recvbuf = -1;
     int opt_linger = -2; // -2 = not set, -1 = disable, >=0 = seconds
     int opt_maxrt = -1; // Maximum retransmission timeout in seconds
+    int opt_send_interval = 5000; // Periodic send interval in milliseconds
+    const char* opt_initial_message = NULL;
 
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--keepalive") == 0 && i + 1 < argc) {
@@ -88,6 +96,10 @@ int main(int argc, char* argv[]) {
             opt_linger = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--maxrt") == 0 && i + 1 < argc) {
             opt_maxrt = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--send-interval") == 0 && i + 1 < argc) {
+            opt_send_interval = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--initial-message") == 0 && i + 1 < argc) {
+            opt_initial_message = argv[++i];
         }
     }
 
@@ -324,33 +336,76 @@ int main(int argc, char* argv[]) {
         printf("  TCP_MAXRT: %d seconds\n", maxrt);
     }
 
-    char buffer[4096];
-    while (keep_running) {
-        int bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytes > 0) {
-            buffer[bytes] = '\0';
-            printf("[recv] %d bytes: %s\n", bytes, buffer);
-        } else if (bytes == 0) {
-            printf("Connection closed by peer.\n");
-            break;
-        } else {
-            int err = WSAGetLastError();
-            if (err == WSAEWOULDBLOCK || err == WSAEINTR) {
-                Sleep(1); // no data, wait a bit
-            } else {
-                printf("recv() failed: %d\n", err);
-                break;
-            }
-        }
-        // Send a simple test message
-        const char* msg = "GET / HTTP/1.0\r\n\r\n";
-        printf("\nSending test HTTP request...\n");
-        result = send(sock, msg, (int)strlen(msg), 0);
+    // Send initial message if provided
+    if (opt_initial_message != NULL) {
+        printf("\nSending initial message: %s\n", opt_initial_message);
+        result = send(sock, opt_initial_message, (int)strlen(opt_initial_message), 0);
         if (result == SOCKET_ERROR) {
-            printf("send() failed: %d\n", WSAGetLastError());
+            printf("Warning: Failed to send initial message: %d\n", WSAGetLastError());
         } else {
             printf("Sent %d bytes\n", result);
         }
+    }
+
+    // Set socket to non-blocking for continuous operation
+    u_long mode = 1;
+    ioctlsocket(sock, FIONBIO, &mode);
+
+    printf("\n=== Connection Active - Press Ctrl+C to exit ===\n");
+    printf("Sending periodic keepalive messages and monitoring for incoming data...\n\n");
+
+    char send_buffer[256];
+    char recv_buffer[4096];
+    int send_counter = 0;
+    DWORD last_send_time = GetTickCount();
+    const DWORD SEND_INTERVAL_MS = opt_send_interval;
+
+    while (keep_running) {
+        // Try to receive data
+        result = recv(sock, recv_buffer, sizeof(recv_buffer) - 1, 0);
+        if (result > 0) {
+            recv_buffer[result] = '\0';
+            printf("[RECV %d bytes] %s", result, recv_buffer);
+            // Print newline only if the received data doesn't end with one
+            if (result > 0 && recv_buffer[result - 1] != '\n') {
+                printf("\n");
+            }
+        } else if (result == 0) {
+            printf("\n[CONNECTION CLOSED] Peer closed the connection\n");
+            break;
+        } else {
+            int err = WSAGetLastError();
+            if (err != WSAEWOULDBLOCK) {
+                printf("\n[ERROR] recv() failed: %d\n", err);
+                break;
+            }
+        }
+
+        // Send periodic data
+        DWORD current_time = GetTickCount();
+        if (current_time - last_send_time >= SEND_INTERVAL_MS) {
+            sprintf(send_buffer, "keepalive #%d (time=%lu)\n", ++send_counter, current_time);
+            result = send(sock, send_buffer, (int)strlen(send_buffer), 0);
+            if (result == SOCKET_ERROR) {
+                int err = WSAGetLastError();
+                if (err != WSAEWOULDBLOCK) {
+                    printf("\n[ERROR] send() failed: %d\n", err);
+                    break;
+                }
+            } else {
+                printf("[SEND %d bytes] %s", result, send_buffer);
+            }
+            last_send_time = current_time;
+        }
+
+        // Small sleep to prevent CPU spinning
+        Sleep(100);
+    }
+
+    if (keep_running) {
+        printf("\nExiting main loop due to connection error...\n");
+    } else {
+        printf("\nExiting main loop due to interrupt signal...\n");
     }
 
     // Cleanup
