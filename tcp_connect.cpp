@@ -336,7 +336,7 @@ int main(int argc, char* argv[]) {
         } else {
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK || err == WSAEINTR) {
-                Sleep(1000); // no data, wait a bit
+                Sleep(1); // no data, wait a bit
             } else {
                 printf("recv() failed: %d\n", err);
                 break;
