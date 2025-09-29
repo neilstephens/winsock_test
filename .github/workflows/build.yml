@@ -1,0 +1,60 @@
+name: Build TCP Connect
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Configure CMake
+      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+    
+    - name: Build
+      run: cmake --build build --config Release
+    
+    - name: List build artifacts
+      run: |
+        dir build\bin\Release
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tcp_connect-windows
+        path: build/bin/Release/tcp_connect.exe
+        
+    - name: Test help message
+      run: build\bin\Release\tcp_connect.exe
+      continue-on-error: true
+
+  build-windows-msvc:
+    runs-on: windows-latest
+    
+    strategy:
+      matrix:
+        arch: [x64, x86]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup MSVC
+      uses: microsoft/setup-msbuild@v2
+    
+    - name: Configure CMake (${{ matrix.arch }})
+      run: cmake -B build-${{ matrix.arch }} -S . -A ${{ matrix.arch == 'x86' && 'Win32' || 'x64' }} -DCMAKE_BUILD_TYPE=Release
+    
+    - name: Build (${{ matrix.arch }})
+      run: cmake --build build-${{ matrix.arch }} --config Release
+    
+    - name: Upload artifact (${{ matrix.arch }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: tcp_connect-windows-${{ matrix.arch }}
+        path: build-${{ matrix.arch }}/bin/Release/tcp_connect.exe
